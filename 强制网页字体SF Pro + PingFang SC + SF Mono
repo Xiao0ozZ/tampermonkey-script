@@ -1,0 +1,200 @@
+// ==UserScript==
+// @name         SF Pro + PingFang SC + SF Mono（图标和编辑器保护版）
+// @namespace    local.apple.fonts
+// @version      2.1
+// @description  英文使用 SF Pro，中文使用 PingFang SC，代码使用 SF Mono，并保护网页图标和编辑器选区
+// @match        http://*/*
+// @match        https://*/*
+// @run-at       document-end
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    const ICON_MARK = 'data-tm-preserve-icon-font';
+
+    const iconSelector = [
+        'svg',
+        'path',
+        'use',
+        '[aria-hidden="true"]',
+        '[role="img"]',
+        '[data-icon]',
+        '[data-lucide]',
+        '[data-feather]',
+        '[class*="icon"]',
+        '[class*="Icon"]',
+        '[class*="material"]',
+        '[class*="symbols"]',
+        '[class*="fa-"]',
+        '[class*="bi-"]',
+        '[class*="ri-"]',
+        '[class*="mdi-"]',
+        '[class*="glyphicon"]',
+        '[class*="anticon"]',
+        '[class*="codicon"]',
+        '[class*="iconify"]'
+    ].join(',');
+
+    const editorSelectors = [
+        `.monaco-editor:not([${ICON_MARK}])`,
+        `.monaco-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+
+        `.CodeMirror:not([${ICON_MARK}])`,
+        `.CodeMirror *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+
+        `.cm-editor:not([${ICON_MARK}])`,
+        `.cm-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+
+        `.ace_editor:not([${ICON_MARK}])`,
+        `.ace_editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+
+        `.jsoneditor:not([${ICON_MARK}])`,
+        `.jsoneditor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`
+    ].map(selector => `html body ${selector}`).join(',\n');
+
+    function markIcon(element) {
+        if (element instanceof Element) {
+            element.setAttribute(ICON_MARK, '1');
+        }
+    }
+
+    function hasIconPseudo(element) {
+        for (const pseudo of ['::before', '::after']) {
+            const style = getComputedStyle(element, pseudo);
+            const content = style.content || '';
+            const fontFamily = (style.fontFamily || '').toLowerCase();
+
+            if (
+                /icon|symbol|glyph|awesome|material|fontello|remix|feather|lucide|phosphor|codicon/.test(fontFamily) ||
+                /\\[ef][0-9a-f]{3,6}/i.test(content) ||
+                /[\uE000-\uF8FF]/.test(content)
+            ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    function protectIcons() {
+        document.querySelectorAll(iconSelector).forEach(markIcon);
+
+        // 处理通过 ::before / ::after 生成的图标
+        document
+            .querySelectorAll('[class], a, button, li')
+            .forEach(element => {
+                if (hasIconPseudo(element)) {
+                    markIcon(element);
+                }
+            });
+    }
+
+    // 先保护图标，再注入字体样式
+    protectIcons();
+
+    const style = document.createElement('style');
+    style.id = 'tm-apple-font-style';
+
+    style.textContent = `
+        /*
+         * 普通网页文字：
+         * 英文、数字优先 SF Pro；
+         * 中文回退 PingFang SC。
+         */
+        :where(
+            body *:not([${ICON_MARK}]):not(svg):not(path):not(use)
+        ) {
+            font-family: "SF Pro", "PingFang SC", sans-serif !important;
+        }
+
+        /*
+         * 普通代码区域
+         */
+        pre,
+        pre *,
+        code,
+        code *,
+        kbd,
+        samp {
+            font-family: "SF Mono", Consolas, monospace !important;
+            font-variant-ligatures: none !important;
+        }
+
+        /*
+         * Monaco、CodeMirror、CodeMirror 6、Ace、JSONEditor：
+         * 使用统一等宽字体，避免文字和选区位置错位。
+         */
+        ${editorSelectors} {
+            font-family: "SF Mono", Consolas, monospace !important;
+            font-variant-ligatures: none !important;
+        }
+    `;
+
+    (document.head || document.documentElement).appendChild(style);
+
+    function refreshEditors() {
+        // 通知编辑器重新计算尺寸
+        window.dispatchEvent(new Event('resize'));
+
+        // CodeMirror 5
+        document.querySelectorAll('.CodeMirror').forEach(element => {
+            const editor = element.CodeMirror;
+
+            if (editor && typeof editor.refresh === 'function') {
+                editor.refresh();
+            }
+        });
+
+        // Monaco
+        if (
+            window.monaco &&
+            window.monaco.editor &&
+            typeof window.monaco.editor.getEditors === 'function'
+        ) {
+            window.monaco.editor.getEditors().forEach(editor => {
+                if (editor && typeof editor.layout === 'function') {
+                    editor.layout();
+                }
+            });
+        }
+
+        // Ace
+        document.querySelectorAll('.ace_editor').forEach(element => {
+            if (
+                element.env &&
+                element.env.editor &&
+                typeof element.env.editor.resize === 'function'
+            ) {
+                element.env.editor.resize(true);
+            }
+        });
+    }
+
+    function scheduleEditorRefresh() {
+        setTimeout(refreshEditors, 150);
+        setTimeout(refreshEditors, 800);
+    }
+
+    // 等字体加载后重新计算编辑器位置
+    if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(scheduleEditorRefresh, scheduleEditorRefresh);
+    } else {
+        scheduleEditorRefresh();
+    }
+
+    // 处理网页后续动态加载的图标
+    let protectTimer;
+
+    new MutationObserver(() => {
+        clearTimeout(protectTimer);
+
+        protectTimer = setTimeout(() => {
+            protectIcons();
+        }, 200);
+    }).observe(document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+})();
