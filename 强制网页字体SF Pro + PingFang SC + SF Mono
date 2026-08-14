@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         SF Pro + PingFang SC + SF Mono（图标和编辑器保护版）
+// @name         SF Pro + PingFang SC + SF Mono（完整保护版）
 // @namespace    local.apple.fonts
-// @version      2.1
+// @version      2.2.0
 // @description  英文使用 SF Pro，中文使用 PingFang SC，代码使用 SF Mono，并保护网页图标和编辑器选区
 // @match        http://*/*
 // @match        https://*/*
@@ -37,22 +37,25 @@
         '[class*="iconify"]'
     ].join(',');
 
+    const glyphFontPattern =
+        /icon|glyph|symbol|awesome|fontello|icomoon|comm_|material|codicon|font[-_]?awesome/i;
+
     const editorSelectors = [
-        `.monaco-editor:not([${ICON_MARK}])`,
-        `.monaco-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        `html body .monaco-editor:not([${ICON_MARK}])`,
+        `html body .monaco-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
 
-        `.CodeMirror:not([${ICON_MARK}])`,
-        `.CodeMirror *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        `html body .CodeMirror:not([${ICON_MARK}])`,
+        `html body .CodeMirror *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
 
-        `.cm-editor:not([${ICON_MARK}])`,
-        `.cm-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        `html body .cm-editor:not([${ICON_MARK}])`,
+        `html body .cm-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
 
-        `.ace_editor:not([${ICON_MARK}])`,
-        `.ace_editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        `html body .ace_editor:not([${ICON_MARK}])`,
+        `html body .ace_editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
 
-        `.jsoneditor:not([${ICON_MARK}])`,
-        `.jsoneditor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`
-    ].map(selector => `html body ${selector}`).join(',\n');
+        `html body .jsoneditor:not([${ICON_MARK}])`,
+        `html body .jsoneditor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`
+    ].join(',\n');
 
     function markIcon(element) {
         if (element instanceof Element) {
@@ -60,14 +63,38 @@
         }
     }
 
+    // 保护通过 style="font-family: comm_glyphs" 声明的图标
+    function protectInlineGlyphFonts(root = document) {
+        root.querySelectorAll('[style*="font-family"]').forEach(element => {
+            const inlineFont = element.style.fontFamily || '';
+            const text = (element.textContent || '').trim();
+
+            if (
+                glyphFontPattern.test(inlineFont) ||
+                (!text && inlineFont)
+            ) {
+                markIcon(element);
+            }
+        });
+    }
+
+    // 检测通过 ::before / ::after 生成的图标
     function hasIconPseudo(element) {
         for (const pseudo of ['::before', '::after']) {
             const style = getComputedStyle(element, pseudo);
             const content = style.content || '';
-            const fontFamily = (style.fontFamily || '').toLowerCase();
+            const fontFamily = style.fontFamily || '';
 
             if (
-                /icon|symbol|glyph|awesome|material|fontello|remix|feather|lucide|phosphor|codicon/.test(fontFamily) ||
+                content === 'none' ||
+                content === 'normal' ||
+                content === '""'
+            ) {
+                continue;
+            }
+
+            if (
+                glyphFontPattern.test(`${fontFamily} ${content}`) ||
                 /\\[ef][0-9a-f]{3,6}/i.test(content) ||
                 /[\uE000-\uF8FF]/.test(content)
             ) {
@@ -78,11 +105,14 @@
         return false;
     }
 
-    function protectIcons() {
-        document.querySelectorAll(iconSelector).forEach(markIcon);
+    function protectIcons(root = document) {
+        root.querySelectorAll(iconSelector).forEach(markIcon);
 
-        // 处理通过 ::before / ::after 生成的图标
-        document
+        // 保护内联声明的图标字体，例如 comm_glyphs
+        protectInlineGlyphFonts(root);
+
+        // 保护伪元素图标
+        root
             .querySelectorAll('[class], a, button, li')
             .forEach(element => {
                 if (hasIconPseudo(element)) {
@@ -91,7 +121,7 @@
             });
     }
 
-    // 先保护图标，再注入字体样式
+    // 先识别图标，再注入字体规则
     protectIcons();
 
     const style = document.createElement('style');
@@ -123,8 +153,8 @@
         }
 
         /*
-         * Monaco、CodeMirror、CodeMirror 6、Ace、JSONEditor：
-         * 使用统一等宽字体，避免文字和选区位置错位。
+         * Monaco、CodeMirror、Ace、JSONEditor：
+         * 统一使用等宽字体，避免选区和文字位置错位。
          */
         ${editorSelectors} {
             font-family: "SF Mono", Consolas, monospace !important;
@@ -135,7 +165,7 @@
     (document.head || document.documentElement).appendChild(style);
 
     function refreshEditors() {
-        // 通知编辑器重新计算尺寸
+        // 通知网页重新计算尺寸
         window.dispatchEvent(new Event('resize'));
 
         // CodeMirror 5
@@ -177,14 +207,17 @@
         setTimeout(refreshEditors, 800);
     }
 
-    // 等字体加载后重新计算编辑器位置
+    // 等字体加载完成后刷新编辑器
     if (document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(scheduleEditorRefresh, scheduleEditorRefresh);
+        document.fonts.ready.then(
+            scheduleEditorRefresh,
+            scheduleEditorRefresh
+        );
     } else {
         scheduleEditorRefresh();
     }
 
-    // 处理网页后续动态加载的图标
+    // 处理网页动态加载的新图标
     let protectTimer;
 
     new MutationObserver(() => {
