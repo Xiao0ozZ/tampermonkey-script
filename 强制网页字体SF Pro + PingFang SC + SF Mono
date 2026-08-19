@@ -1,11 +1,11 @@
 // ==UserScript==
-// @name         SF Pro + PingFang SC + SF Mono（完整保护版）
+// @name         SF Pro + PingFang SC + SF Mono（防闪烁版）
 // @namespace    local.apple.fonts
-// @version      2.2.0
-// @description  英文使用 SF Pro，中文使用 PingFang SC，代码使用 SF Mono，并保护网页图标和编辑器选区
+// @version      3.0.0
+// @description  英文使用 SF Pro，中文使用 PingFang SC，代码使用 SF Mono，并保护网页图标
 // @match        http://*/*
 // @match        https://*/*
-// @run-at       document-end
+// @run-at       document-start
 // @grant        none
 // ==/UserScript==
 
@@ -13,6 +13,9 @@
     'use strict';
 
     const ICON_MARK = 'data-tm-preserve-icon-font';
+
+    const glyphFontPattern =
+        /icon|glyph|symbol|awesome|fontello|icomoon|comm_|material|codicon|font[-_]?awesome/i;
 
     const iconSelector = [
         'svg',
@@ -37,25 +40,104 @@
         '[class*="iconify"]'
     ].join(',');
 
-    const glyphFontPattern =
-        /icon|glyph|symbol|awesome|fontello|icomoon|comm_|material|codicon|font[-_]?awesome/i;
+    /*
+     * 页面刚开始加载时，先排除：
+     * - SVG 图标
+     * - 常见图标 class
+     * - 直接声明了 font-family 的元素
+     *
+     * 这样 comm_glyphs 等图标字体不会先被 SF Pro 覆盖。
+     */
+    const earlyTextSelector = [
+        `body *:not([${ICON_MARK}])`,
+        ':not([style*="font-family"])',
+        ':not(svg)',
+        ':not(path)',
+        ':not(use)',
+        ':not([aria-hidden="true"])',
+        ':not([role="img"])',
+        ':not([data-icon])',
+        ':not([class*="icon"])',
+        ':not([class*="Icon"])',
+        ':not([class*="material"])',
+        ':not([class*="symbols"])',
+        ':not([class*="fa-"])',
+        ':not([class*="bi-"])',
+        ':not([class*="ri-"])',
+        ':not([class*="mdi-"])',
+        ':not([class*="glyphicon"])',
+        ':not([class*="anticon"])',
+        ':not([class*="codicon"])',
+        ':not([class*="iconify"])'
+    ].join('');
 
     const editorSelectors = [
-        `html body .monaco-editor:not([${ICON_MARK}])`,
-        `html body .monaco-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        'html body .monaco-editor .view-lines',
+        'html body .monaco-editor .view-lines *:not(svg):not(path):not(use)',
 
-        `html body .CodeMirror:not([${ICON_MARK}])`,
-        `html body .CodeMirror *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        'html body .CodeMirror .CodeMirror-code',
+        'html body .CodeMirror .CodeMirror-code *:not(svg):not(path):not(use)',
 
-        `html body .cm-editor:not([${ICON_MARK}])`,
-        `html body .cm-editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        'html body .cm-editor .cm-content',
+        'html body .cm-editor .cm-content *:not(svg):not(path):not(use)',
 
-        `html body .ace_editor:not([${ICON_MARK}])`,
-        `html body .ace_editor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`,
+        'html body .ace_editor .ace_text-layer',
+        'html body .ace_editor .ace_text-layer *:not(svg):not(path):not(use)',
 
-        `html body .jsoneditor:not([${ICON_MARK}])`,
-        `html body .jsoneditor *:not([${ICON_MARK}]):not(svg):not(path):not(use)`
+        'html body .ace_editor .ace_gutter',
+        'html body .jsoneditor-text',
+        'html body .jsoneditor-text *:not(svg):not(path):not(use)'
     ].join(',\n');
+
+    const style = document.createElement('style');
+    style.id = 'tm-apple-font-style';
+
+    style.textContent = `
+        /*
+         * 普通网页文字：
+         * 英文、数字优先 SF Pro；
+         * 中文回退 PingFang SC。
+         */
+        :where(${earlyTextSelector}) {
+            font-family: "SF Pro", "PingFang SC", sans-serif !important;
+        }
+
+        /*
+         * 普通代码区域
+         */
+        pre,
+        pre *,
+        code,
+        code *,
+        kbd,
+        samp {
+            font-family: "SF Mono", Consolas, monospace !important;
+            font-variant-ligatures: none !important;
+        }
+
+        /*
+         * 常见代码编辑器
+         */
+        ${editorSelectors} {
+            font-family: "SF Mono", Consolas, monospace !important;
+            font-variant-ligatures: none !important;
+        }
+    `;
+
+    function injectStyle() {
+        const root = document.documentElement;
+
+        if (!root) {
+            return;
+        }
+
+        if (!document.getElementById(style.id)) {
+            root.insertBefore(style, root.firstChild);
+        }
+    }
+
+    // 尽早注入，减少页面初始闪烁
+    injectStyle();
 
     function markIcon(element) {
         if (element instanceof Element) {
@@ -63,7 +145,6 @@
         }
     }
 
-    // 保护通过 style="font-family: comm_glyphs" 声明的图标
     function protectInlineGlyphFonts(root = document) {
         root.querySelectorAll('[style*="font-family"]').forEach(element => {
             const inlineFont = element.style.fontFamily || '';
@@ -78,12 +159,11 @@
         });
     }
 
-    // 检测通过 ::before / ::after 生成的图标
     function hasIconPseudo(element) {
         for (const pseudo of ['::before', '::after']) {
-            const style = getComputedStyle(element, pseudo);
-            const content = style.content || '';
-            const fontFamily = style.fontFamily || '';
+            const computed = getComputedStyle(element, pseudo);
+            const content = computed.content || '';
+            const fontFamily = computed.fontFamily || '';
 
             if (
                 content === 'none' ||
@@ -105,14 +185,14 @@
         return false;
     }
 
-    function protectIcons(root = document) {
-        root.querySelectorAll(iconSelector).forEach(markIcon);
+    function protectIcons() {
+        document.querySelectorAll(iconSelector).forEach(markIcon);
 
-        // 保护内联声明的图标字体，例如 comm_glyphs
-        protectInlineGlyphFonts(root);
+        // 保护 comm_glyphs、Fontello、IcoMoon 等内联图标字体
+        protectInlineGlyphFonts();
 
-        // 保护伪元素图标
-        root
+        // 保护通过 ::before / ::after 生成的图标
+        document
             .querySelectorAll('[class], a, button, li')
             .forEach(element => {
                 if (hasIconPseudo(element)) {
@@ -121,51 +201,7 @@
             });
     }
 
-    // 先识别图标，再注入字体规则
-    protectIcons();
-
-    const style = document.createElement('style');
-    style.id = 'tm-apple-font-style';
-
-    style.textContent = `
-        /*
-         * 普通网页文字：
-         * 英文、数字优先 SF Pro；
-         * 中文回退 PingFang SC。
-         */
-        :where(
-            body *:not([${ICON_MARK}]):not(svg):not(path):not(use)
-        ) {
-            font-family: "SF Pro", "PingFang SC", sans-serif !important;
-        }
-
-        /*
-         * 普通代码区域
-         */
-        pre,
-        pre *,
-        code,
-        code *,
-        kbd,
-        samp {
-            font-family: "SF Mono", Consolas, monospace !important;
-            font-variant-ligatures: none !important;
-        }
-
-        /*
-         * Monaco、CodeMirror、Ace、JSONEditor：
-         * 统一使用等宽字体，避免选区和文字位置错位。
-         */
-        ${editorSelectors} {
-            font-family: "SF Mono", Consolas, monospace !important;
-            font-variant-ligatures: none !important;
-        }
-    `;
-
-    (document.head || document.documentElement).appendChild(style);
-
     function refreshEditors() {
-        // 通知网页重新计算尺寸
         window.dispatchEvent(new Event('resize'));
 
         // CodeMirror 5
@@ -203,21 +239,28 @@
     }
 
     function scheduleEditorRefresh() {
-        setTimeout(refreshEditors, 150);
+        setTimeout(refreshEditors, 200);
         setTimeout(refreshEditors, 800);
+        setTimeout(refreshEditors, 1600);
     }
 
-    // 等字体加载完成后刷新编辑器
-    if (document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(
-            scheduleEditorRefresh,
-            scheduleEditorRefresh
-        );
+    // 页面结构准备好后识别图标
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            protectIcons();
+            scheduleEditorRefresh();
+        }, { once: true });
     } else {
+        protectIcons();
         scheduleEditorRefresh();
     }
 
-    // 处理网页动态加载的新图标
+    // 字体加载完成后再次刷新编辑器
+    if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(scheduleEditorRefresh);
+    }
+
+    // 处理动态加载的新图标
     let protectTimer;
 
     new MutationObserver(() => {
